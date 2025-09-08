@@ -17,7 +17,7 @@ WORKDIR /root
 COPY requiremets/ requirements/
 
 # expecting similar build_vllm_s390x.sh
-COPY build_vllm_ppc64le.sh ./
+COPY build_vllm_*.sh ./
 
 # this script would build all necessary packages from source
 # and populate the uv cache with all trasitive dependencies of vllm
@@ -57,7 +57,30 @@ ENV LD_LIBRARY_PATH=/opt/vllm/lib64/python${PYTHON_VERSION}/site-packages/torch/
 ENV OMP_NUM_THREADS=16
 ENV UV_LINK_MODE=copy
 
+RUN if [ "$(uname -m)" = "ppc64le" ]; then \
+        rpm -ivh https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm \
+        && microdnf install --nodocs -y \
+              libomp tar findutils openssl llvm15 llvm15-devel \
+              pkgconfig xsimd g++ gcc-fortran libsndfile \
+              libtiff libjpeg openjpeg2 zlib zeromq \
+              freetype lcms2 libwebp tcl tk utf8proc \
+              harfbuzz fribidi libraqm libimagequant libxcb \
+        && microdnf clean all; \
+    fi
 
+RUN if [ "$(uname -m)" = "s390x" ]; then \
+        rpm -ivh https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm \
+        && microdnf install --nodocs -y \
+              gcc gcc-gfortran g++ make patch zlib-devel \
+              libjpeg-turbo-devel libtiff-devel libpng-devel libwebp-devel freetype-devel harfbuzz-devel \
+              openssl-devel openblas openblas-devel autoconf automake libtool cmake numpy libsndfile \
+              clang llvm-devel llvm-static clang-devel \
+        && microdnf clean all; \
+    fi
+
+RUN microdnf install -y \
+    python${PYTHON_VERSION}-devel python${PYTHON_VERSION}-pip python${PYTHON_VERSION}-wheel  && \
+    python${PYTHON_VERSION} -m venv $VIRTUAL_ENV && pip install --no-cache -U pip wheel uv && microdnf clean all
 # NOTE: s390x/ppc64le - ensure the directories that need to be mounted are created on BOTH architectures
 #      Example: if s390x doesn't build openblas and lapack from source, ppc64le script should ensure
 #               that a dummy directory for lapack and openblas is created on s390x for mounting
@@ -66,25 +89,13 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=cache,from=builder-base,source=/root/numactl/,target=/numactl/,rw \
     --mount=type=cache,from=builder-base,source=/root/lapack/,target=/lapack/,rw \
     --mount=type=cache,from=builder-base,source=/root/OpenBLAS,target=/openblas/,rw \
-    rpm -ivh https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm \
-    && microdnf install --nodocs -y \
-          libomp tar findutils openssl llvm15 llvm15-devel \
-          pkgconfig xsimd g++ gcc-fortran libsndfile \
-          libtiff libjpeg openjpeg2 zlib zeromq \
-          freetype lcms2 libwebp tcl tk utf8proc \
-          harfbuzz fribidi libraqm libimagequant libxcb \
-          python${PYTHON_VERSION}-devel python${PYTHON_VERSION}-pip \
-    && microdnf clean all \
-    && python${PYTHON_VERSION} -m venv ${VIRTUAL_ENV} \
-    && python -m pip install -U pip uv --no-cache \
-    && make -C /numactl install \
-    && PREFIX=/usr/local make -C /openblas install \
-# Question: s390x builds pytorch with setup.py (lapack is statically linked) \
-#           ppc64le uses build module - uses shared libs for lapack \
-# Resolution: Either we make this conditional, or have some discussion and agreement on this
-    && uv pip install --no-cache 'cmake<4' \
-    && cmake --install /lapack/build \
-    && uv pip uninstall cmake
+    make -C /numactl install \
+    && if [ "$(uname -m)" = "ppc64le" ]; then \
+        PREFIX=/usr/local make -C /openblas install \
+        && uv pip install --no-cache 'cmake<4' \
+        && cmake --install /lapack/build \
+        && uv pip uninstall cmake; \
+    fi
 
 # consume previously built wheels
 RUN --mount=type=cache,target=/root/.cache/uv \
