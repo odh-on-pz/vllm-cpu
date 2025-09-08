@@ -19,10 +19,11 @@ COPY requiremets/ requirements/
 # expecting similar build_vllm_s390x.sh
 COPY build_vllm_ppc64le.sh ./
 
+# this script would build all necessary packages from source
+# and populate the uv cache with all trasitive dependencies of vllm
 RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=cache,target=/var/cache/dnf \
-    ./build_vllm_$(uname -m).sh && \
-    touch /tmp/control
+    ./build_vllm_$(uname -m).sh
 
 ###############################################################
 #                   FINAL VLLM IMAGE STAGE                    #
@@ -56,9 +57,6 @@ ENV LD_LIBRARY_PATH=/opt/vllm/lib64/python${PYTHON_VERSION}/site-packages/torch/
 ENV OMP_NUM_THREADS=16
 ENV UV_LINK_MODE=copy
 
-# create artificial dependencies between stages for independent stages to build in parallel
-COPY --from=builder-base /tmp/control /dev/null
-
 
 # NOTE: s390x/ppc64le - ensure the directories that need to be mounted are created on BOTH architectures
 #      Example: if s390x doesn't build openblas and lapack from source, ppc64le script should ensure
@@ -89,7 +87,6 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     && uv pip uninstall cmake
 
 # consume previously built wheels
-
 RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=cache,from=builder-base,source=/wheelsdir/,target=/wheelsdir/,ro \
     export PKG_CONFIG_PATH=$(find / -type d -name "pkgconfig" 2>/dev/null | tr '\n' ':') && uv pip install sentencepiece==0.2.0 && \
