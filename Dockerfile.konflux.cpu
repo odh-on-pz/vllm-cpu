@@ -1,8 +1,34 @@
-FROM registry.access.redhat.com/ubi9/ubi-minimal:latest
+# Base UBI image
+ARG BASE_UBI_IMAGE_TAG=9.5-1741850109
+ARG VLLM_VERSION="v0.10.0.2"
+ARG PYTHON_VERSION=3.12
+ARG VLLM_TGIS_ADAPTER_VERSION="0.8.0"
 
-USER 1001
+###############################################################
+#                       BUILDER  STAGE                        #
+###############################################################
 
+FROM registry.access.redhat.com/ubi9/ubi-minimal:${BASE_UBI_IMAGE_TAG} AS builder-base
 
+USER root
+ENV HOME=/root
+WORKDIR /root
+
+COPY requiremets/ requirements/
+
+# expecting similar build_vllm_s390x.sh
+COPY build_vllm_ppc64le.sh ./
+
+RUN --mount=type=cache,target=/root/.cache/uv \
+    --mount=type=cache,target=/var/cache/dnf \
+    ./build_vllm_$(uname -m).sh && \
+    touch /tmp/control
+
+###############################################################
+#                   FINAL VLLM IMAGE STAGE                    #
+###############################################################
+
+FROM registry.access.redhat.com/ubi9/ubi-minimal:${BASE_UBI_IMAGE_TAG} AS vllm-openai
 
 LABEL name="rhoai/odh-vllm-cpu-rhel9" \
       com.redhat.component="odh-vllm-cpu-rhel9" \
@@ -11,3 +37,109 @@ LABEL name="rhoai/odh-vllm-cpu-rhel9" \
       description="CPU-only build of vLLM, optimized for running inference without requiring GPU hardware." \
       summary="CPU-only build of vLLM, optimized for running inference without requiring GPU hardware." \
       com.redhat.license_terms="https://www.redhat.com/licenses/Red_Hat_Standard_EULA_20191108.pdf"
+
+ARG PYTHON_VERSION=3.12
+ENV VLLM_NO_USAGE_STATS=1
+
+# Set Environment Variables for venv & openblas
+ENV VIRTUAL_ENV=/opt/vllm
+ENV PATH=${VIRTUAL_ENV}/bin:$PATH:/usr/lib64/llvm15/bin
+ENV PKG_CONFIG_PATH=/usr/local/lib/pkgconfig/
+# from: s390x
+ENV C_INCLUDE_PATH="/usr/local/include:$C_INCLUDE_PATH"
+# from: ppc64le
+#ENV LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/lib64:/usr/local/lib:/usr/lib64:/usr/lib
+# from: s390x
+#ENV LD_LIBRARY_PATH="/opt/vllm/lib64/python${PYTHON_VERSION}/site-packages/torch/lib:/usr/local/lib:$LD_LIBRARY_PATH"
+# merged: ppc64le + s390x
+ENV LD_LIBRARY_PATH=/opt/vllm/lib64/python${PYTHON_VERSION}/site-packages/torch/lib:/usr/local/lib:$LD_LIBRARY_PATH:/usr/local/lib64:/usr/local/lib:/usr/lib64:/usr/lib
+ENV OMP_NUM_THREADS=16
+ENV UV_LINK_MODE=copy
+
+# create artificial dependencies between stages for independent stages to build in parallel
+COPY --from=builder-base /tmp/control /dev/null
+
+
+# NOTE: s390x/ppc64le - ensure the directories that need to be mounted are created on BOTH architectures
+#      Example: if s390x doesn't build openblas and lapack from source, ppc64le script should ensure
+#               that a dummy directory for lapack and openblas is created on s390x for mounting
+# install gcc-11, python, openblas, numactl, lapack
+RUN --mount=type=cache,target=/root/.cache/uv \
+    --mount=type=cache,from=builder-base,source=/root/numactl/,target=/numactl/,rw \
+    --mount=type=cache,from=builder-base,source=/root/lapack/,target=/lapack/,rw \
+    --mount=type=cache,from=builder-base,source=/root/OpenBLAS,target=/openblas/,rw \
+    rpm -ivh https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm \
+    && microdnf install --nodocs -y \
+          libomp tar findutils openssl llvm15 llvm15-devel \
+          pkgconfig xsimd g++ gcc-fortran libsndfile \
+          libtiff libjpeg openjpeg2 zlib zeromq \
+          freetype lcms2 libwebp tcl tk utf8proc \
+          harfbuzz fribidi libraqm libimagequant libxcb \
+          python${PYTHON_VERSION}-devel python${PYTHON_VERSION}-pip \
+    && microdnf clean all \
+    && python${PYTHON_VERSION} -m venv ${VIRTUAL_ENV} \
+    && python -m pip install -U pip uv --no-cache \
+    && make -C /numactl install \
+    && PREFIX=/usr/local make -C /openblas install \
+# Question: s390x builds pytorch with setup.py (lapack is statically linked) \
+#           ppc64le uses build module - uses shared libs for lapack \
+# Resolution: Either we make this conditional, or have some discussion and agreement on this
+    && uv pip install --no-cache 'cmake<4' \
+    && cmake --install /lapack/build \
+    && uv pip uninstall cmake
+
+# consume previously built wheels
+
+RUN --mount=type=cache,target=/root/.cache/uv \
+    --mount=type=cache,from=builder-base,source=/wheelsdir/,target=/wheelsdir/,ro \
+    export PKG_CONFIG_PATH=$(find / -type d -name "pkgconfig" 2>/dev/null | tr '\n' ':') && uv pip install sentencepiece==0.2.0 && \
+    # --offline will ensure wheels are picked from uv cache and nothing is pulled from pypi/built from source
+    # vllm wheel should be present in /wheelsdir/ ( at least for ppc64le - and transitive dependencies in uv cache )
+    HOME=/root uv pip install /wheelsdir/*.whl --offline
+
+WORKDIR /home/vllm
+
+# setup non-root user for OpenShift
+RUN umask 002 && \
+    useradd --uid 2000 --gid 0 vllm && \
+    mkdir -p /home/vllm && \
+    chmod g+rwx /home/vllm
+
+ENV HF_HUB_OFFLINE=0 \
+    HOME=/home/vllm \
+    # Allow requested max length to exceed what is extracted from the
+    # config.json
+    # see: https://github.com/vllm-project/vllm/pull/7080
+    VLLM_ALLOW_LONG_MAX_MODEL_LEN=1 \
+    VLLM_USAGE_SOURCE=production-docker-image \
+    VLLM_WORKER_MULTIPROC_METHOD=fork \
+    VLLM_NO_USAGE_STATS=1 \
+    OUTLINES_CACHE_DIR=/tmp/outlines
+
+COPY LICENSE /licenses/vllm.md
+COPY examples/*.jinja /app/data/template/
+
+USER 2000
+
+ENTRYPOINT ["python", "-m", "vllm.entrypoints.openai.api_server"]
+
+FROM vllm-openai as vllm-grpc-adapter
+
+USER root
+
+ARG VLLM_TGIS_ADAPTER_VERSION
+RUN --mount=type=cache,target=/root/.cache/uv \
+    --mount=type=cache,from=builder-base,source=/wheelsdir/,target=/wheelsdir/,ro \
+    HOME=/root uv pip install "$(echo /wheelsdir/vllm*.whl)[tensorizer]" vllm-tgis-adapter==${VLLM_TGIS_ADAPTER_VERSION}
+
+ENV GRPC_PORT=8033 \
+    PORT=8000 \
+    # As an optimization, vLLM disables logprobs when using spec decoding by
+    # default, but this would be unexpected to users of a hosted model that
+    # happens to have spec decoding
+    # see: https://github.com/vllm-project/vllm/pull/6485
+    DISABLE_LOGPROBS_DURING_SPEC_DECODING=false
+
+USER 2000
+
+ENTRYPOINT ["python", "-m", "vllm_tgis_adapter", "--uvicorn-log-level=warning"]
