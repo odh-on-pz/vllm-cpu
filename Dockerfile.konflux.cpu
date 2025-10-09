@@ -50,7 +50,14 @@ COPY . .
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install -U setuptools && \
     SETUPTOOLS_SCM_PRETEND_VERSION="$VLLM_VERSION" uv build --wheel --out-dir ${WHEEL_DIR} --no-build-isolation && \
-    uv pip install "$(echo ${WHEEL_DIR}/vllm*.whl)[tensorizer]" vllm-tgis-adapter==${VLLM_TGIS_ADAPTER_VERSION};
+    uv pip install "$(echo ${WHEEL_DIR}/vllm*.whl)[tensorizer]";
+
+RUN --mount=type=cache,target=/root/.cache/uv \
+    microdnf install -y git && \
+    uv pip install --no-cache-dir --no-deps \
+    git+https://github.com/opendatahub-io/vllm-tgis-adapter@${VLLM_TGIS_ADAPTER_VERSION} && \
+    microdnf remove -y git && microdnf clean all
+
 
 ###############################################################
 #                   FINAL VLLM IMAGE STAGE                    #
@@ -172,7 +179,7 @@ USER root
 ARG VLLM_TGIS_ADAPTER_VERSION="0.9.0.post1"
 RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=cache,from=builder-base,source=/wheelsdir/,target=/wheelsdir/,ro \
-    HOME=/root uv pip install "$(echo /wheelsdir/vllm*.whl)[tensorizer]" vllm-tgis-adapter==${VLLM_TGIS_ADAPTER_VERSION};
+    HOME=/root uv pip install "$(echo /wheelsdir/vllm*.whl)[tensorizer]" vllm-tgis-adapter==${VLLM_TGIS_ADAPTER_VERSION} --offline;
 
 ENV GRPC_PORT=8033 \
     PORT=8000 \
