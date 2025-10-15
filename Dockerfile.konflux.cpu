@@ -108,7 +108,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     fi; \
     if [[ $(uname -m) == "ppc64le" ]]; then \
     # system dependencies needed at runtime for ppc64le; \
-    rpm -ivh https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm; \
+    # rpm -ivh https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm; \
     microdnf install --nodocs -y \
     libomp tar findutils openssl llvm15 llvm15-devel \
     pkgconfig xsimd g++ gcc-fortran libsndfile \
