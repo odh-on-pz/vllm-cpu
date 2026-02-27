@@ -7,7 +7,7 @@ CURDIR=$(pwd)
 # install development packages
 rpm -ivh https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm
 microdnf install -y \
-    git jq gcc-toolset-14 gcc-toolset-14-libatomic-devel automake libtool clang-devel openssl-devel freetype-devel fribidi-devel \
+    git jq gcc-toolset-13 gcc-toolset-13-libatomic-devel automake libtool clang-devel openssl-devel freetype-devel fribidi-devel \
     harfbuzz-devel kmod lcms2-devel libimagequant-devel libjpeg-turbo-devel llvm15-devel \
     libraqm-devel libtiff-devel libwebp-devel libxcb-devel ninja-build openjpeg2-devel pkgconfig protobuf* \
     tcl-devel tk-devel xsimd-devel zeromq-devel zlib-devel patchelf file
@@ -15,7 +15,7 @@ microdnf install -y \
 # install rust
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 
-source /opt/rh/gcc-toolset-14/enable
+source /opt/rh/gcc-toolset-13/enable
 source /root/.cargo/env
 export PATH=/usr/lib64/llvm15/bin:$PATH;
 export LLVM_CONFIG=/usr/lib64/llvm15/bin/llvm-config;
@@ -271,7 +271,7 @@ install_opencv
 
 # back to vLLM root
 cd ${CURDIR}
-source /opt/rh/gcc-toolset-14/enable
+source /opt/rh/gcc-toolset-13/enable
 
 # llvmlite==0.44.0 needs setuptools<70
 echo "setuptools<70.0.0" > build_constraints.txt
